@@ -2,66 +2,55 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"gopher-cron/internal/core"
 	"gopher-cron/internal/infra"
 	"log"
-	"os"
-	"os/signal"
-	"syscall"
+	"time"
 )
 
+// 为了演示，我们将 Worker 端口定死。实际需动态分配。
+const WorkerPort = "9090"
+
 func main() {
-	// 模拟从环境变量获取 Node ID
-	nodeID := "node-" + os.Getenv("HOSTNAME")
-	if nodeID == "node-" {
-		nodeID = "node-local-1"
-	}
-
-	// 1. 连接 Etcd
-	coord, err := infra.NewCoordinator(nodeID, []string{"127.0.0.1:2379"})
-	if err != nil {
-		log.Fatalf("Failed to connect etcd: %v", err)
-	}
-	defer coord.Close()
-
-	// 2. 注册节点 (我是个干活的 Worker)
-	go func() {
-		if err := coord.RegisterNode(); err != nil {
-			log.Printf("Register error: %v", err)
-		}
-	}()
-
-	// 3. 初始化调度核心
+	// --- 组件初始化 ---
 	jobManager := core.NewJobManager()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	// 1. 初始化核心任务（供 Worker 使用）
+	jobID := jobManager.AddJob("test-job", func(ctx context.Context) error {
+		fmt.Println("🚀 WORKER: executing actual job logic...")
+		return nil
+	})
 
-	// 4. 核心分歧点：是 Master 才跑调度
-	// 开启一个协程去竞选
+	// 启动 JobManager 内部消费协程
+	go jobManager.Start(context.Background())
+
+	// 2. 启动 Worker 的 gRPC Server
+	grpcWorker := infra.NewGrpcWorker(WorkerPort, jobManager)
 	go func() {
-		// 如果竞选成功，代码才会往下走；如果别人是 Master，这里会阻塞住等待机会
-		if coord.Campaign(ctx) {
-			// --- 我是 Master ---
-			log.Println("Main Scheduler starting...")
-			// 这里我们简单模拟加入一个任务
-			jobManager.AddJob("DistributedJob", func(c context.Context) error {
-				log.Println("Execute Logic...")
-				return nil
-			})
-			// 启动调度循环
-			jobManager.Start(ctx)
-		} else {
-			// Campaign 返回 false 说明 ctx 可能被取消了，或者发生了错误
-			log.Println("Campaign stopped")
+		if err := grpcWorker.Start(); err != nil {
+			panic(err)
 		}
 	}()
 
-	// 5. 优雅退出
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
+	// 给予 Server 启动缓冲时间
+	time.Sleep(1 * time.Second)
 
-	log.Println("Shutting down...")
-	cancel() // 这会导致 Campaign context 取消，Master 放弃身份
+	// --- 模拟 Master 行为 ---
+	// 3. 模拟 Master 决定调度任务
+	log.Println("MASTER: Starting dispatch sequence...")
+	dispatcher := infra.NewMasterDispatcher()
+
+	// 模拟从 Etcd 拿到的 Worker 地址 (localhost:9090)
+	targetWorker := "localhost:" + WorkerPort
+
+	err := dispatcher.Dispatch(context.Background(), targetWorker, jobID, "Testing")
+	if err != nil {
+		log.Printf("MASTER: Dispatch failed: %v", err)
+	} else {
+		log.Println("MASTER: Dispatch Success! ✅")
+	}
+
+	// 阻塞住，看效果
+	select {}
 }

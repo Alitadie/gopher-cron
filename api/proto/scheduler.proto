@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package proto;
+
+// 指定生成 Go 代码的路径
+option go_package = "gopher-cron/api/proto";
+
+// 定义执行器服务
+service Executor {
+    // Master 下发任务给 Worker
+    rpc PushJob (PushJobRequest) returns (PushJobResponse);
+}
+
+message PushJobRequest {
+    string job_id = 1;
+    string job_name = 2;
+    string job_param = 3;  // 业务参数
+    int64  log_id = 4;     // 日志 ID，用于后续追踪
+}
+
+message PushJobResponse {
+    int32 code = 1; // 200 成功，500 失败
+    string msg = 2; // 错误信息
+}
